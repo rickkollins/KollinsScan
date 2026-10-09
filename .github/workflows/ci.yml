@@ -27,7 +27,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Build image
-        run: docker build -t kollinsscan:ci .
+        # Docker Hub often rate-limits GitHub's shared runners, so fetch the
+        # base image from Google's Docker Hub mirror first.
+        run: |
+          docker pull mirror.gcr.io/library/python:3.12-slim
+          docker tag mirror.gcr.io/library/python:3.12-slim python:3.12-slim
+          docker build -t kollinsscan:ci .
       - name: Scan a page through the container
         run: |
           pip install -r requirements.txt
