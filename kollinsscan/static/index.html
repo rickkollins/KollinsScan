@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KollinsScan</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <section id="login-view" class="login" hidden>
+    <form id="login-form" class="card login-card">
+      <h1>KollinsScan</h1>
+      <p class="muted">Sign in to read text from images.</p>
+      <label>User name <input name="user" autocomplete="username" required></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <p id="login-error" class="error" hidden></p>
+      <button type="submit" class="primary">Sign in</button>
+    </form>
+  </section>
+
+  <div id="app-view" hidden>
+    <header class="topbar">
+      <span class="brand">KollinsScan</span>
+      <span class="spacer"></span>
+      <label class="lang">Language
+        <select id="language"></select>
+      </label>
+      <button id="logout" class="ghost">Sign out</button>
+    </header>
+
+    <main class="layout">
+      <section class="work">
+        <label id="dropzone" class="dropzone" tabindex="0">
+          <input id="file-input" type="file" accept="image/*,.tif,.tiff" multiple hidden>
+          <strong>Drop images here</strong>
+          <span class="muted">or click to choose, or paste with Ctrl/⌘ V</span>
+          <span class="muted small" id="limits"></span>
+        </label>
+        <div id="results"></div>
+      </section>
+
+      <aside class="history">
+        <h2>History</h2>
+        <p id="history-empty" class="muted small">Nothing read yet.</p>
+        <ul id="history-list"></ul>
+      </aside>
+    </main>
+  </div>
+
+  <template id="result-template">
+    <article class="card result">
+      <div class="result-head">
+        <div>
+          <h3 class="filename"></h3>
+          <p class="meta muted small"></p>
+        </div>
+        <div class="actions">
+          <button class="copy">Copy</button>
+          <a class="download button">Download .txt</a>
+          <button class="close ghost" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="result-body">
+        <img class="preview" alt="" hidden>
+        <textarea class="text" spellcheck="false" readonly></textarea>
+      </div>
+    </article>
+  </template>
+</body>
+</html>

@@ -1,0 +1,32 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        TESSERACT_LANGS: ${TESSERACT_LANGS:-eng}
+    env_file: .env
+    volumes:
+      - kollinsscan-data:/data
+    restart: unless-stopped
+
+  # Caddy gets and renews the HTTPS certificate for your domain automatically.
+  caddy:
+    image: caddy:2.10
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      KOLLINSSCAN_DOMAIN: ${KOLLINSSCAN_DOMAIN:?Set KOLLINSSCAN_DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  kollinsscan-data:
+  caddy-data:
+  caddy-config:

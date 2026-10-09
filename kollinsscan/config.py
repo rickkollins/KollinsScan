@@ -1,0 +1,34 @@
+"""Settings, read from environment variables (see .env.example)."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+
+@dataclass
+class Config:
+    data_dir: str = "data"
+    admin_user: str = "admin"
+    admin_password: str = ""
+    secure_cookies: bool = True
+    session_hours: int = 24 * 7
+    max_upload_mb: int = 20
+    # How many images are OCR'd at the same time (each uses one CPU core).
+    ocr_workers: int = 2
+    ocr_timeout: int = 120
+    default_language: str = "eng"
+
+    @classmethod
+    def from_env(cls) -> "Config":
+        env = os.environ.get
+        return cls(
+            data_dir=env("KOLLINSSCAN_DATA_DIR", "data"),
+            admin_user=env("KOLLINSSCAN_ADMIN_USER", "admin"),
+            admin_password=env("KOLLINSSCAN_ADMIN_PASSWORD", ""),
+            secure_cookies=env("KOLLINSSCAN_SECURE_COOKIES", "1") != "0",
+            max_upload_mb=int(env("KOLLINSSCAN_MAX_UPLOAD_MB", "20")),
+            ocr_workers=int(env("KOLLINSSCAN_OCR_WORKERS", "2")),
+            ocr_timeout=int(env("KOLLINSSCAN_OCR_TIMEOUT", "120")),
+            default_language=env("KOLLINSSCAN_DEFAULT_LANGUAGE", "eng"),
+        )
