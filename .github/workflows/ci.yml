@@ -23,16 +23,24 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Build image
         run: docker build -t kollinsscan:ci .
-      - name: Start it and read an image through the API
+      - name: Scan a page through the container
         run: |
+          pip install -r requirements.txt
+          (cd tests && python make_pages.py)
           docker run -d --name ks -p 8000:8000 \
             -e KOLLINSSCAN_ADMIN_PASSWORD=ci-password -e KOLLINSSCAN_SECURE_COOKIES=0 kollinsscan:ci
           for i in $(seq 1 30); do curl -fs localhost:8000/healthz && break; sleep 1; done
           curl -fs -c jar -H 'Content-Type: application/json' \
             -d '{"user":"admin","password":"ci-password"}' localhost:8000/api/login
-          docker exec ks python -c "from PIL import Image, ImageDraw, ImageFont; i = Image.new('RGB', (900, 160), 'white'); ImageDraw.Draw(i).text((30, 40), 'Hello KollinsScan', fill='black', font=ImageFont.load_default(size=48)); i.save('/tmp/t.png')"
-          docker cp ks:/tmp/t.png t.png
-          curl -fs -b jar -H 'X-KollinsScan: 1' -F file=@t.png localhost:8000/api/ocr | tee out.json
-          grep -q KollinsScan out.json
+          book=$(curl -fs -b jar -H 'X-KollinsScan: 1' -H 'Content-Type: application/json' \
+            -d '{"title":"CI Book"}' localhost:8000/api/books | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+          curl -fs -b jar -H 'X-KollinsScan: 1' -F file=@tests/page1.jpg \
+            localhost:8000/api/books/$book/pages | tee page.json
+          grep -q 'CHAPTER ONE' page.json
+          curl -fs -b jar "localhost:8000/api/books/$book/export?format=rtf" | tee book.rtf | head -c 600
+          grep -q 'outlinelevel0' book.rtf

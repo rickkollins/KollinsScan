@@ -9,10 +9,11 @@
   <script src="/static/app.js" defer></script>
 </head>
 <body>
+  <!-- Sign in -->
   <section id="login-view" class="login" hidden>
     <form id="login-form" class="card login-card">
       <h1>KollinsScan</h1>
-      <p class="muted">Sign in to read text from images.</p>
+      <p class="muted">Sign in to scan your books.</p>
       <label>User name <input name="user" autocomplete="username" required></label>
       <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
       <p id="login-error" class="error" hidden></p>
@@ -20,53 +21,142 @@
     </form>
   </section>
 
-  <div id="app-view" hidden>
+  <!-- Library -->
+  <div id="library-view" hidden>
     <header class="topbar">
       <span class="brand">KollinsScan</span>
       <span class="spacer"></span>
-      <label class="lang">Language
-        <select id="language"></select>
-      </label>
-      <button id="logout" class="ghost">Sign out</button>
+      <button class="ghost logout">Sign out</button>
     </header>
-
-    <main class="layout">
-      <section class="work">
-        <label id="dropzone" class="dropzone" tabindex="0">
-          <input id="file-input" type="file" accept="image/*,.tif,.tiff" multiple hidden>
-          <strong>Drop images here</strong>
-          <span class="muted">or click to choose, or paste with Ctrl/⌘ V</span>
-          <span class="muted small" id="limits"></span>
-        </label>
-        <div id="results"></div>
+    <main class="library">
+      <form id="new-book" class="card new-book">
+        <h2>New book</h2>
+        <label>Title <input name="title" required maxlength="200"></label>
+        <label>Author <input name="author" maxlength="200"></label>
+        <label>Language <select name="language" class="language-select"></select></label>
+        <p id="new-book-error" class="error" hidden></p>
+        <button type="submit" class="primary">Create and start scanning</button>
+      </form>
+      <section>
+        <h2>Your books</h2>
+        <p id="no-books" class="muted">No books yet. Create one to start scanning.</p>
+        <ul id="book-list" class="book-list"></ul>
       </section>
-
-      <aside class="history">
-        <h2>History</h2>
-        <p id="history-empty" class="muted small">Nothing read yet.</p>
-        <ul id="history-list"></ul>
-      </aside>
     </main>
   </div>
 
-  <template id="result-template">
-    <article class="card result">
-      <div class="result-head">
-        <div>
-          <h3 class="filename"></h3>
-          <p class="meta muted small"></p>
+  <!-- One book -->
+  <div id="book-view" hidden>
+    <header class="topbar">
+      <a href="#/" class="button ghost">← Library</a>
+      <input id="book-title" class="title-input" aria-label="Title" maxlength="200">
+      <input id="book-author" class="author-input" aria-label="Author" placeholder="Author" maxlength="200">
+      <span class="spacer"></span>
+      <span id="save-state" class="muted small"></span>
+      <a id="export-rtf" class="button primary" download>Download RTF</a>
+      <a id="export-txt" class="button" download>Text</a>
+      <button class="ghost logout">Sign out</button>
+    </header>
+
+    <div class="book-layout">
+      <main class="book-main">
+        <section class="card scanner">
+          <div class="camera">
+            <video id="video" autoplay playsinline muted hidden></video>
+            <div id="camera-off" class="camera-off">
+              <p>Connect your USB camera, then</p>
+              <button id="start-camera" class="primary">Turn on camera</button>
+              <p id="camera-error" class="error small" hidden></p>
+            </div>
+            <div id="flash" class="flash" hidden></div>
+          </div>
+          <div class="scanner-controls">
+            <label>Camera <select id="camera-select"></select></label>
+            <button id="rotate" title="Rotate the picture if the camera is mounted sideways">Rotate ↻ <span id="rotation">0°</span></button>
+            <label>Next page number <input id="next-label" size="5" placeholder="auto"></label>
+            <div id="mode-banner" class="mode-banner" hidden>
+              <span id="mode-text"></span> <button id="mode-cancel" class="ghost">Cancel</button>
+            </div>
+            <div class="capture-row">
+              <button id="capture" class="primary big" disabled>Capture page <kbd>Space</kbd></button>
+              <label class="button">Upload photo<input id="upload" type="file" accept="image/*,.tif,.tiff" multiple hidden></label>
+            </div>
+            <label class="check"><input type="checkbox" id="auto-check" checked> Check grammar after each page</label>
+            <p id="scan-status" class="muted small" aria-live="polite"></p>
+          </div>
+        </section>
+
+        <div id="toolbar" class="toolbar" role="toolbar" aria-label="Formatting">
+          <button data-block="p" title="Normal paragraph">¶ Text</button>
+          <button data-block="h1" title="Chapter heading (in the table of contents)">Chapter</button>
+          <button data-block="h2" title="Section heading (in the table of contents)">Section</button>
+          <span class="sep"></span>
+          <button data-inline="bold" title="Bold"><b>B</b></button>
+          <button data-inline="italic" title="Italic"><i>I</i></button>
+          <button data-inline="underline" title="Underline"><u>U</u></button>
+          <span class="sep"></span>
+          <button id="clear-marks" title="Remove the yellow 'unsure word' highlights from this page">Clear highlights</button>
         </div>
-        <div class="actions">
-          <button class="copy">Copy</button>
-          <a class="download button">Download .txt</a>
-          <button class="close ghost" title="Close">✕</button>
+
+        <div id="pages" class="pages"></div>
+        <p id="no-pages" class="muted empty">No pages yet. Put the book's first page under the camera and press <b>Capture page</b>.</p>
+      </main>
+
+      <aside class="sidebar">
+        <div class="tabs" role="tablist">
+          <button role="tab" data-tab="contents" aria-selected="true">Contents</button>
+          <button role="tab" data-tab="proofread" aria-selected="false">Proofread <span id="issue-count" class="badge" hidden></span></button>
         </div>
+        <section id="tab-contents" class="tab-panel">
+          <ol id="toc" class="toc"></ol>
+          <p id="toc-empty" class="muted small">Chapter and section headings appear here. Headings are found automatically; to add one, put the cursor in a line and press <b>Chapter</b> or <b>Section</b>.</p>
+          <p class="muted small">The RTF file starts with this table of contents. In Word or LibreOffice, right-click it and choose <b>Update Field</b> to switch to the RTF's own page numbers.</p>
+        </section>
+        <section id="tab-proofread" class="tab-panel" hidden>
+          <div id="grammar-off" class="muted small" hidden>Grammar checking isn't set up on this server.</div>
+          <div id="grammar-on">
+            <div class="row">
+              <button id="check-page">Check this page</button>
+              <button id="check-book">Check whole book</button>
+            </div>
+            <p id="check-status" class="muted small" aria-live="polite"></p>
+            <div class="filters">
+              <label><input type="checkbox" data-cat="spelling" checked> <span class="dot spelling"></span>Spelling</label>
+              <label><input type="checkbox" data-cat="grammar" checked> <span class="dot grammar"></span>Grammar</label>
+              <label><input type="checkbox" data-cat="punctuation" checked> <span class="dot punctuation"></span>Punctuation</label>
+            </div>
+            <ul id="issues" class="issues"></ul>
+          </div>
+          <p class="muted small"><mark>Yellow</mark> words are ones the scanner wasn't sure about. Check them against the photo (<b>Photo</b> button on each page).</p>
+          <details id="book-lists" class="small">
+            <summary>Dictionary and ignored rules</summary>
+            <p class="muted">Words added here aren't flagged as spelling mistakes in this book.</p>
+            <ul id="dictionary" class="chips"></ul>
+            <ul id="ignored-rules" class="chips"></ul>
+          </details>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <template id="page-template">
+    <section class="page">
+      <div class="page-head">
+        <label class="page-label">Page <input class="label" size="5"></label>
+        <span class="page-info muted small"></span>
+        <span class="spacer"></span>
+        <button class="photo ghost small-btn">Photo</button>
+        <button class="rescan ghost small-btn" title="Scan this page again">Re-scan</button>
+        <button class="insert ghost small-btn" title="Scan a missed page after this one">Add after</button>
+        <button class="up ghost small-btn" title="Move up">↑</button>
+        <button class="down ghost small-btn" title="Move down">↓</button>
+        <button class="delete ghost small-btn" title="Delete page">✕</button>
       </div>
-      <div class="result-body">
-        <img class="preview" alt="" hidden>
-        <textarea class="text" spellcheck="false" readonly></textarea>
+      <div class="page-body">
+        <img class="page-photo" alt="Photo of this page" hidden>
+        <div class="page-text" contenteditable="true" spellcheck="true"></div>
       </div>
-    </article>
+    </section>
   </template>
 </body>
 </html>

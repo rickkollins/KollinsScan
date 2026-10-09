@@ -5,11 +5,25 @@ services:
       args:
         TESSERACT_LANGS: ${TESSERACT_LANGS:-eng}
     env_file: .env
+    environment:
+      KOLLINSSCAN_LANGUAGETOOL_URL: ${KOLLINSSCAN_LANGUAGETOOL_URL-http://languagetool:8010}
     volumes:
       - kollinsscan-data:/data
+    depends_on:
+      - languagetool
+    restart: unless-stopped
+
+  # Grammar, spelling and punctuation checker. Runs on your VPS, so the
+  # book's text isn't sent anywhere else. Needs about 1 GB of memory.
+  languagetool:
+    image: erikvl87/languagetool:6.7
+    environment:
+      Java_Xms: 256m
+      Java_Xmx: ${LANGUAGETOOL_MEMORY:-1g}
     restart: unless-stopped
 
   # Caddy gets and renews the HTTPS certificate for your domain automatically.
+  # (Browsers only allow the camera on HTTPS sites.)
   caddy:
     image: caddy:2.10
     ports:

@@ -1,3 +1,3 @@
-"""KollinsScan: a self-hosted OCR web app (images to text)."""
+"""KollinsScan: scan a book page by page into an editable, proofread RTF."""
 
 __version__ = "0.1.0"

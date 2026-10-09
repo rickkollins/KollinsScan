@@ -1,5 +1,5 @@
-"""SQLite storage for login sessions and OCR results (text only; uploaded
-images are never written to disk)."""
+"""SQLite storage for login sessions, books and their pages. Page photos are
+stored as files next to the database (see app.py)."""
 
 from __future__ import annotations
 
@@ -12,15 +12,30 @@ CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
     expires REAL NOT NULL
 );
-CREATE TABLE IF NOT EXISTS results (
+CREATE TABLE IF NOT EXISTS books (
     id INTEGER PRIMARY KEY,
-    created REAL NOT NULL,
-    filename TEXT NOT NULL,
+    title TEXT NOT NULL,
+    author TEXT NOT NULL DEFAULT '',
     language TEXT NOT NULL,
-    pages INTEGER NOT NULL,
-    seconds REAL NOT NULL,
-    text TEXT NOT NULL
+    created REAL NOT NULL,
+    updated REAL NOT NULL,
+    -- JSON lists: words the spell check should accept (character names...)
+    -- and LanguageTool rules switched off for this book.
+    dictionary TEXT NOT NULL DEFAULT '[]',
+    ignored_rules TEXT NOT NULL DEFAULT '[]',
+    -- Running headers seen on this book's pages, so they can be dropped.
+    headers TEXT NOT NULL DEFAULT '[]'
 );
+CREATE TABLE IF NOT EXISTS pages (
+    id INTEGER PRIMARY KEY,
+    book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    seq REAL NOT NULL,          -- reading order
+    label TEXT NOT NULL,        -- the printed page number
+    html TEXT NOT NULL,
+    created REAL NOT NULL,
+    updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pages_by_book ON pages (book_id, seq);
 """
 
 
@@ -30,6 +45,7 @@ class DB:
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()
         with self._lock, self._conn:
+            self._conn.execute("PRAGMA foreign_keys = ON")
             self._conn.execute("PRAGMA journal_mode = WAL")
             self._conn.executescript(SCHEMA)
 
