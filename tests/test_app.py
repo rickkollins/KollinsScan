@@ -47,14 +47,41 @@ class FakeLanguageTool(BaseHTTPRequestHandler):
         pass
 
 
+class FakeAnthropic(BaseHTTPRequestHandler):
+    """Answers POST /v1/messages like the Anthropic API."""
+    requests: list[dict] = []
+    reply: dict = {}
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        FakeAnthropic.requests.append(
+            {"body": body, "headers": {k.lower(): v for k, v in self.headers.items()}})
+        message = {
+            "id": "msg_test", "type": "message", "role": "assistant",
+            "model": body["model"], "stop_sequence": None,
+            "usage": {"input_tokens": 1500, "output_tokens": 400},
+            **FakeAnthropic.reply,
+        }
+        data = json.dumps(message).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass
+
+
 class AppTestCase(unittest.TestCase):
     languagetool = ""
+    anthropic_key = ""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         self.app = create_app(Config(data_dir=self.tmp, admin_user="rick",
                                      admin_password="correct horse", secure_cookies=False,
-                                     max_upload_mb=2, languagetool_url=self.languagetool))
+                                     max_upload_mb=2, languagetool_url=self.languagetool,
+                                     anthropic_api_key=self.anthropic_key))
         self.client = TestClient(self.app)
 
     def tearDown(self):
@@ -171,8 +198,8 @@ class DocumentTests(unittest.TestCase):
 
 class OCRUnitTests(unittest.TestCase):
     def test_punctuation_fixes(self):
-        words = [(w, False) for w in "She stood , wondering ( quietly ) there.The end".split()]
-        self.assertEqual(" ".join(w for w, _ in ocr.fix_punctuation(words)),
+        words = [ocr.Word(w) for w in "She stood , wondering ( quietly ) there.The end".split()]
+        self.assertEqual(" ".join(w.text for w in ocr.fix_punctuation(words)),
                          "She stood, wondering (quietly) there. The end")
 
     def test_page_numbers(self):
@@ -186,6 +213,25 @@ class OCRUnitTests(unittest.TestCase):
         self.assertTrue(ocr.valid_language("eng+spa", ["eng", "spa"]))
         self.assertFalse(ocr.valid_language("eng+fra", ["eng", "spa"]))
         self.assertFalse(ocr.valid_language("eng -c x", ["eng"]))
+
+
+@unittest.skipUnless(HAVE_TESSERACT and make_pages.HAVE_STYLE_FONTS,
+                     "tesseract or the Liberation fonts are not installed")
+class StyleTests(unittest.TestCase):
+    def test_italic_and_bold_words(self):
+        html = ocr.read_page(make_pages.styled_page()).html
+        self.assertIn("<i>The Long Goodbye</i>", html)
+        self.assertIn("<b>never</b>", html)
+        self.assertIn("<i>mon cher ami,</i>", html)
+        self.assertIn("<i>always</i>", html)
+        # Nothing else is styled.
+        styled = [b for b in document.from_html(html) for r in b["runs"] if r["i"] or r["b"]]
+        self.assertEqual(len(styled), 4)
+
+    def test_plain_page_has_no_styles(self):
+        html = ocr.read_page(make_pages.styled_page(plain=True)).html
+        self.assertNotIn("<i>", html)
+        self.assertNotIn("<b>", html)
 
 
 @unittest.skipUnless(HAVE_TESSERACT, "tesseract is not installed")
@@ -209,6 +255,8 @@ class OCRPageTests(unittest.TestCase):
         self.assertIn("lived there. The path", first)        # "there.The" fixed
         self.assertIn("drew her forward, and", first)        # hyphen rejoined
         self.assertTrue(document.block_text(blocks[2]).startswith("Inside, the hall"))
+        self.assertNotIn("<i>", result.html)  # plain type isn't mistaken for italics
+        self.assertNotIn("<b>", result.html)
 
     def test_running_header_and_number(self):
         result = ocr.read_page(make_pages.page_two())
@@ -282,6 +330,14 @@ class BookTests(AppTestCase):
         # The sentence that ran over the page break is one paragraph again.
         self.assertIn("all this time and would go on waiting", rtf.text)
 
+        docx = self.client.get(f"/api/books/{book_id}/export?format=docx")
+        self.assertIn('filename="The House on the Hill.docx"', docx.headers["content-disposition"])
+        import zipfile, io
+        body = zipfile.ZipFile(io.BytesIO(docx.content)).read("word/document.xml").decode()
+        self.assertIn("TOC \\o", body)
+        self.assertIn('w:val="Heading1"', body)
+        self.assertIn("would go on waiting", body)
+
         txt = self.client.get(f"/api/books/{book_id}/export?format=txt").text
         self.assertIn("Contents", txt)
         self.assertIn("would go on waiting", txt)
@@ -299,6 +355,76 @@ class BookTests(AppTestCase):
         self.client.post(f"/api/pages/{ids[0]}/move", headers=HEADERS, json={"direction": "up"})
         order = [p["id"] for p in self.client.get(f"/api/books/{book_id}").json()["pages"]]
         self.assertEqual(order, [ids[0], ids[2], ids[1]])  # already first
+
+
+class ClaudeTests(AppTestCase):
+    anthropic_key = "sk-ant-test"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = HTTPServer(("127.0.0.1", 0), FakeAnthropic)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls._old_base = os.environ.get("ANTHROPIC_BASE_URL")
+        os.environ["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{cls.server.server_port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        if cls._old_base is None:
+            os.environ.pop("ANTHROPIC_BASE_URL", None)
+        else:
+            os.environ["ANTHROPIC_BASE_URL"] = cls._old_base
+
+    def page_with_photo(self) -> dict:
+        self.login()
+        book_id = self.new_book()
+        db = self.app.state.db
+        page_id = db.execute("INSERT INTO pages (book_id, seq, label, html, created, updated) "
+                             "VALUES (?, 1, '7', '<p>She stood at the gate fora long time.</p>', 0, 0)",
+                             (book_id,))
+        os.makedirs(os.path.join(self.tmp, "scans", str(book_id)))
+        with open(os.path.join(self.tmp, "scans", str(book_id), f"{page_id}.jpg"), "wb") as f:
+            f.write(b"\xff\xd8fake-jpeg")
+        return {"id": page_id, "book_id": book_id}
+
+    def test_read_page(self):
+        page = self.page_with_photo()
+        FakeAnthropic.reply = {"stop_reason": "end_turn", "content": [{"type": "text", "text": json.dumps({
+            "html": '<p>She stood at the gate for a <i>long</i> time.</p><script>x()</script>',
+            "page_number": "7", "notes": ""})}]}
+        r = self.client.post(f"/api/pages/{page['id']}/claude", headers=HEADERS, json={})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["html"], "<p>She stood at the gate for a <i>long</i> time.</p>")
+        self.assertEqual(r.json()["page_number"], "7")
+        # Nothing is saved until the user accepts it.
+        pages = self.client.get(f"/api/books/{page['book_id']}").json()["pages"]
+        self.assertIn("fora long", pages[0]["html"])
+
+        sent = FakeAnthropic.requests[-1]
+        body = sent["body"]
+        self.assertEqual(body["model"], "claude-opus-5-5")
+        self.assertEqual(body["fallbacks"], "default")
+        self.assertIn("server-side-fallback-2026-07-01", sent["headers"].get("anthropic-beta", ""))
+        self.assertEqual(body["output_config"]["format"]["type"], "json_schema")
+        image, text = body["messages"][0]["content"]
+        self.assertEqual(image["source"]["media_type"], "image/jpeg")
+        self.assertIn("fora long time", text["text"])
+        self.assertEqual(sent["headers"].get("x-api-key"), "sk-ant-test")
+
+    def test_refusal(self):
+        page = self.page_with_photo()
+        FakeAnthropic.reply = {"stop_reason": "refusal", "content": []}
+        r = self.client.post(f"/api/pages/{page['id']}/claude", headers=HEADERS, json={})
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("declined", r.json()["error"])
+
+    def test_off_without_key(self):
+        app = create_app(Config(data_dir=self.tmp, admin_password="pw", secure_cookies=False))
+        with TestClient(app) as c:
+            c.post("/api/login", json={"user": "admin", "password": "pw"})
+            self.assertFalse(c.get("/api/me").json()["claude"])
+            r = c.post("/api/pages/1/claude", headers=HEADERS, json={})
+            self.assertEqual(r.status_code, 503)
 
 
 class GrammarTests(AppTestCase):

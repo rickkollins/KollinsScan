@@ -2,11 +2,14 @@
 slight blur, a running header, a chapter opening and a page number."""
 
 import io
+import os
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 WIDTH, HEIGHT = 1700, 2300
+SERIF = "/usr/share/fonts/truetype/liberation/LiberationSerif-{}.ttf"
+HAVE_STYLE_FONTS = all(os.path.exists(SERIF.format(s)) for s in ("Regular", "Italic", "Bold"))
 
 
 def page(lines, header=None, footer=None) -> bytes:
@@ -64,6 +67,38 @@ def page_two() -> bytes:
         ("line", "but no one answered."),
         ("first", "The next morning she returned with a lantern."),
     ], header="THE HOUSE ON THE HILL                                    2")
+
+
+def styled_page(plain: bool = False) -> bytes:
+    """A camera-like photo of a paragraph with italic and bold words (all
+    regular type with plain=True)."""
+    fonts = {k: ImageFont.truetype(SERIF.format(v), 34)
+             for k, v in (("r", "Regular"), ("i", "Italic"), ("b", "Bold"))}
+    lines = [
+        [("r", "It was late when"), ("i", "The Long Goodbye"), ("r", "arrived in the post.")],
+        [("r", "She read it twice and"), ("b", "never"), ("r", "opened it again, though")],
+        [("r", "the title,"), ("i", "mon cher ami,"), ("r", "stayed with her for years.")],
+        [("r", "Nothing about the house was ordinary; the door was"), ("i", "always")],
+        [("r", "left open and the windows were painted shut.")],
+    ]
+    img = Image.new("L", (1700, 600), 245)
+    draw = ImageDraw.Draw(img)
+    y = 60
+    for line in lines:
+        x = 150
+        for kind, text in line:
+            font = fonts["r" if plain else kind]
+            draw.text((x, y), text, font=font, fill=25)
+            x += draw.textlength(text + " ", font=font)
+        y += 52
+    # Slightly soft and unevenly lit, like a camera photo.
+    yy, xx = np.mgrid[0:img.height, 0:img.width]
+    shade = 0.7 + 0.3 * np.clip(xx / (img.width * 0.5), 0, 1)
+    arr = np.asarray(img, dtype=np.float32) * shade
+    img = Image.fromarray(arr.clip(0, 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(0.7))
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, "JPEG", quality=88)
+    return buf.getvalue()
 
 
 if __name__ == "__main__":

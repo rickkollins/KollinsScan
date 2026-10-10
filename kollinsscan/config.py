@@ -20,6 +20,9 @@ class Config:
     default_language: str = "eng"
     # LanguageTool server for grammar checks; empty turns them off.
     languagetool_url: str = ""
+    # Anthropic API key for "Ask Claude" on hard pages; empty turns it off.
+    anthropic_api_key: str = ""
+    claude_model: str = "claude-opus-5-5"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -34,4 +37,6 @@ class Config:
             ocr_timeout=int(env("KOLLINSSCAN_OCR_TIMEOUT", "120")),
             default_language=env("KOLLINSSCAN_DEFAULT_LANGUAGE", "eng"),
             languagetool_url=env("KOLLINSSCAN_LANGUAGETOOL_URL", ""),
+            anthropic_api_key=env("ANTHROPIC_API_KEY", ""),
+            claude_model=env("KOLLINSSCAN_CLAUDE_MODEL", "") or "claude-opus-5-5",
         )

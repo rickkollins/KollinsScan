@@ -21,7 +21,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import __version__, document, grammar, ocr
+from . import __version__, claude, document, docx_export, grammar, ocr
 from .auth import COOKIE, Auth
 from .config import Config
 from .db import DB
@@ -51,6 +51,7 @@ def create_app(config: Config | None = None) -> Starlette:
     max_bytes = config.max_upload_mb * 1024 * 1024
     ocr_slots = asyncio.Semaphore(config.ocr_workers)
     installed = ocr.languages()
+    claude_slots = asyncio.Semaphore(2)
 
     def signed_in(handler):
         """Requires a login session. Changes also need the X-KollinsScan
@@ -125,6 +126,7 @@ def create_app(config: Config | None = None) -> Starlette:
             "default_language": config.default_language,
             "max_upload_mb": config.max_upload_mb,
             "grammar": bool(config.languagetool_url),
+            "claude": bool(config.anthropic_api_key),
         })
 
     # ---- books -----------------------------------------------------------
@@ -213,6 +215,10 @@ def create_app(config: Config | None = None) -> Starlette:
         name = safe_filename(book["title"])
         if kind == "txt":
             body, media, ext = document.to_text(book, pages), "text/plain; charset=utf-8", "txt"
+        elif kind == "docx":
+            body = await run_in_threadpool(docx_export.to_docx, book, pages)
+            media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ext = "docx"
         else:
             body, media, ext = document.to_rtf(book, pages), "application/rtf", "rtf"
         return Response(body, media_type=media,
@@ -380,6 +386,33 @@ def create_app(config: Config | None = None) -> Starlette:
         return JSONResponse({"ok": True})
 
     @signed_in
+    async def page_claude(request: Request):
+        """Claude's reading of a page, for the user to accept or discard.
+        Nothing is saved here."""
+        if not config.anthropic_api_key:
+            return error("Claude isn't set up on this server (no ANTHROPIC_API_KEY).", 503)
+        page = find_page(request)
+        if not page:
+            return error("No such page", 404)
+        book = get_book(page["book_id"])
+        try:
+            with open(image_path(page["book_id"], page["id"]), "rb") as f:
+                photo = f.read()
+        except OSError:
+            return error("This page has no saved photo for Claude to read.", 404)
+        # Claude reads the text as it is now, including your edits.
+        body = await body_json(request)
+        current = str(body.get("html", page["html"]))[:MAX_HTML]
+        try:
+            async with claude_slots:
+                result = await run_in_threadpool(
+                    claude.read_page, config.anthropic_api_key, config.claude_model,
+                    photo, current, book["language"])
+        except claude.ClaudeError as e:
+            return error(str(e), 502)
+        return JSONResponse(result)
+
+    @signed_in
     async def page_image(request: Request):
         page = find_page(request)
         path = page and image_path(page["book_id"], page["id"])
@@ -406,6 +439,7 @@ def create_app(config: Config | None = None) -> Starlette:
         Route("/api/pages/{id:int}", page_delete, methods=["DELETE"]),
         Route("/api/pages/{id:int}/move", page_move, methods=["POST"]),
         Route("/api/pages/{id:int}/image", page_image),
+        Route("/api/pages/{id:int}/claude", page_claude, methods=["POST"]),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ])
     app.add_middleware(SecurityHeaders)

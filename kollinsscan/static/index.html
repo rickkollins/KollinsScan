@@ -53,8 +53,10 @@
       <input id="book-author" class="author-input" aria-label="Author" placeholder="Author" maxlength="200">
       <span class="spacer"></span>
       <span id="save-state" class="muted small"></span>
-      <a id="export-rtf" class="button primary" download>Download RTF</a>
-      <a id="export-txt" class="button" download>Text</a>
+      <span class="muted small">Download</span>
+      <a id="export-rtf" class="button primary export" download>RTF</a>
+      <a id="export-docx" class="button primary export" download>Word</a>
+      <a id="export-txt" class="button export" download>Text</a>
       <button class="ghost logout">Sign out</button>
     </header>
 
@@ -73,6 +75,17 @@
           <div class="scanner-controls">
             <label>Camera <select id="camera-select"></select></label>
             <button id="rotate" title="Rotate the picture if the camera is mounted sideways">Rotate ↻ <span id="rotation">0°</span></button>
+            <div class="sharpness" id="sharpness" hidden>
+              <span class="small">Sharpness</span>
+              <div class="meter" aria-hidden="true"><div id="sharp-bar"></div></div>
+              <span id="sharp-label" class="small"></span>
+            </div>
+            <details id="camera-settings" class="camera-settings" hidden>
+              <summary>Camera settings</summary>
+              <div id="camera-controls" class="camera-controls"></div>
+              <p id="camera-controls-none" class="muted small" hidden>This camera or browser doesn't offer focus or exposure settings here. Chrome and Edge show the most settings.</p>
+              <button id="camera-reset" class="ghost small-btn">Reset to automatic</button>
+            </details>
             <label>Next page number <input id="next-label" size="5" placeholder="auto"></label>
             <div id="mode-banner" class="mode-banner" hidden>
               <span id="mode-text"></span> <button id="mode-cancel" class="ghost">Cancel</button>
@@ -110,7 +123,7 @@
         <section id="tab-contents" class="tab-panel">
           <ol id="toc" class="toc"></ol>
           <p id="toc-empty" class="muted small">Chapter and section headings appear here. Headings are found automatically; to add one, put the cursor in a line and press <b>Chapter</b> or <b>Section</b>.</p>
-          <p class="muted small">The RTF file starts with this table of contents. In Word or LibreOffice, right-click it and choose <b>Update Field</b> to switch to the RTF's own page numbers.</p>
+          <p class="muted small">The RTF and Word downloads start with this table of contents, showing the printed book's page numbers. Word offers to update it to the document's own page numbers when it opens; in an RTF, right-click it and choose <b>Update Field</b>.</p>
         </section>
         <section id="tab-proofread" class="tab-panel" hidden>
           <div id="grammar-off" class="muted small" hidden>Grammar checking isn't set up on this server.</div>
@@ -145,12 +158,24 @@
         <label class="page-label">Page <input class="label" size="5"></label>
         <span class="page-info muted small"></span>
         <span class="spacer"></span>
+        <button class="claude ghost small-btn" title="Have Claude re-read this page from its photo and suggest corrections" hidden>Ask Claude</button>
         <button class="photo ghost small-btn">Photo</button>
         <button class="rescan ghost small-btn" title="Scan this page again">Re-scan</button>
         <button class="insert ghost small-btn" title="Scan a missed page after this one">Add after</button>
         <button class="up ghost small-btn" title="Move up">↑</button>
         <button class="down ghost small-btn" title="Move down">↓</button>
         <button class="delete ghost small-btn" title="Delete page">✕</button>
+      </div>
+      <div class="claude-review" hidden>
+        <div class="review-head">
+          <strong>Claude's reading</strong>
+          <span class="review-summary muted small"></span>
+          <span class="spacer"></span>
+          <button class="review-accept primary">Use this</button>
+          <button class="review-discard">Keep mine</button>
+        </div>
+        <p class="review-notes muted small" hidden></p>
+        <div class="review-diff"></div>
       </div>
       <div class="page-body">
         <img class="page-photo" alt="Photo of this page" hidden>

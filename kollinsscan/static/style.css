@@ -125,6 +125,19 @@ label { display: inline-flex; align-items: center; gap: 6px; }
 .capture-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .mode-banner { background: var(--mark); border-radius: 8px; padding: 4px 4px 4px 10px; display: flex; align-items: center; gap: 6px; }
 .check { font-size: 14px; }
+.sharpness { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 360px; }
+.meter { flex: 1; height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; }
+#sharp-bar { height: 100%; width: 0; background: var(--muted); transition: width .2s, background .2s; }
+#sharp-bar.good { background: #2e9d57; }
+#sharp-bar.fair { background: var(--punctuation); }
+#sharp-bar.poor { background: var(--spelling); }
+.camera-settings { width: 100%; }
+.camera-settings summary { cursor: pointer; font-size: 14px; }
+.camera-controls { display: grid; gap: 8px; margin: 8px 0; }
+.camera-controls label { display: grid; grid-template-columns: 110px minmax(0, 1fr) 70px; align-items: center; gap: 8px; font-size: 14px; }
+.camera-controls select { max-width: none; }
+.camera-controls output { font-size: 12px; color: var(--muted); text-align: right; }
+.export { padding: 6px 10px; }
 
 .toolbar {
   position: sticky; top: 52px; z-index: 5;
@@ -161,6 +174,19 @@ label { display: inline-flex; align-items: center; gap: 6px; }
 .page-text h3 { font-size: 1.1em; margin: .5em 0 .4em; }
 .page.busy .page-text { opacity: .55; }
 .page.failed .page-info { color: var(--error); }
+.page.blurry .page-info { color: var(--punctuation); }
+.claude.suggest { color: var(--accent); border-color: var(--accent); }
+.claude-review {
+  border: 1px solid var(--accent); border-radius: 10px; background: var(--card);
+  padding: 12px 16px; margin-bottom: 10px; display: grid; gap: 8px;
+}
+.review-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.review-notes { margin: 0; }
+.review-diff { font: 16px/1.6 Georgia, "Times New Roman", serif; max-height: 60vh; overflow: auto; }
+.review-diff p, .review-diff .h { margin: 0 0 .6em; }
+.review-diff .h { font-weight: 700; text-align: center; }
+.review-diff ins { background: color-mix(in srgb, #2e9d57 25%, transparent); text-decoration: none; border-radius: 2px; }
+.review-diff del { background: color-mix(in srgb, var(--spelling) 18%, transparent); color: var(--muted); border-radius: 2px; }
 ::highlight(issue-spelling) { text-decoration: underline wavy var(--spelling); text-decoration-thickness: 1.5px; }
 ::highlight(issue-grammar) { text-decoration: underline wavy var(--grammar); text-decoration-thickness: 1.5px; }
 ::highlight(issue-punctuation) { text-decoration: underline wavy var(--punctuation); text-decoration-thickness: 1.5px; }
@@ -207,6 +233,7 @@ label { display: inline-flex; align-items: center; gap: 6px; }
 .chips button { padding: 0 6px; border: 0; background: none; }
 
 @media (max-width: 1000px) {
+  .camera-controls label { grid-template-columns: 90px minmax(0, 1fr) 56px; }
   .book-layout { grid-template-columns: minmax(0, 1fr); }
   .sidebar { position: static; max-height: none; }
   .scanner { grid-template-columns: minmax(0, 1fr); }

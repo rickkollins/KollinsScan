@@ -120,8 +120,23 @@ def prepare(img: Image.Image) -> Image.Image:
 # --------------------------------------------------------------------------
 
 @dataclass
+class Word:
+    text: str
+    unsure: bool = False
+    italic: bool = False
+    bold: bool = False
+    slant: float = 0.0     # see word_style()
+    stroke: float = 0.0
+
+    def joined(self, other: "Word", text: str) -> "Word":
+        """This word merged with the next one (punctuation, a hyphen break)."""
+        return Word(text, self.unsure or other.unsure, self.italic, self.bold,
+                    self.slant, self.stroke)
+
+
+@dataclass
 class Line:
-    words: list[tuple[str, bool]]   # (word, unsure)
+    words: list[Word]
     top: int
     bottom: int
     left: int
@@ -133,12 +148,12 @@ class Para:
     lines: list[Line]
 
     @property
-    def words(self) -> list[tuple[str, bool]]:
+    def words(self) -> list[Word]:
         return [w for line in self.lines for w in line.words]
 
     @property
     def text(self) -> str:
-        return " ".join(w for w, _ in self.words)
+        return " ".join(w.text for w in self.words)
 
     top = property(lambda self: self.lines[0].top)
     bottom = property(lambda self: self.lines[-1].bottom)
@@ -146,21 +161,83 @@ class Para:
     right = property(lambda self: max(line.right for line in self.lines))
 
 
-def text_lines(data: dict) -> list[Line]:
-    """Tesseract's word boxes -> text lines, top to bottom."""
+def text_lines(data: dict, img: Image.Image | None = None) -> list[Line]:
+    """Tesseract's word boxes -> text lines, top to bottom. With the page
+    image, words printed in italic or bold are marked too."""
+    ink = np.asarray(img) < 128 if img is not None else None
     lines: dict[tuple, Line] = {}
-    for i, word in enumerate(data["text"]):
-        word = word.strip()
+    for i, text in enumerate(data["text"]):
+        text = text.strip()
         conf = float(data["conf"][i])
-        if not word or conf < 0:
+        if not text or conf < 0:
             continue
         x, y, w, h = (data[k][i] for k in ("left", "top", "width", "height"))
+        word = Word(text, conf < UNSURE_BELOW)
+        if ink is not None:
+            word.slant, word.stroke = word_style(ink[y:y + h, x:x + w])
         key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
         line = lines.setdefault(key, Line([], y, y + h, x, x + w))
-        line.words.append((word, conf < UNSURE_BELOW))
+        line.words.append(word)
         line.top, line.bottom = min(line.top, y), max(line.bottom, y + h)
         line.left, line.right = min(line.left, x), max(line.right, x + w)
-    return sorted(lines.values(), key=lambda line: line.top)
+    ordered = sorted(lines.values(), key=lambda line: line.top)
+    if ink is not None:
+        mark_styles([w for line in ordered for w in line.words])
+    return ordered
+
+
+# --------------------------------------------------------------------------
+# Italic and bold
+# --------------------------------------------------------------------------
+
+ITALIC_SLANT = 0.1      # lean (horizontal shift per pixel of height) beyond normal
+BOLD_STROKE = 1.3       # stroke width compared with the page's normal text
+MIN_STYLED_WORDS = 15   # too few words on a page to know what "normal" is
+
+
+def word_style(box: np.ndarray) -> tuple[float, float]:
+    """(slant, stroke width) of one word's ink.
+
+    Slant: the shear that makes the letters' strokes most vertical, i.e.
+    stacks the ink into the sharpest columns. Upright type comes out
+    near 0, italic type at about 0.12-0.3.
+    Stroke width: the average length of a horizontal run of ink.
+    """
+    ys, xs = np.nonzero(box)
+    if len(xs) < 20:
+        return 0.0, 0.0
+    bottom = box.shape[0]
+
+    def sharpness(shear: float) -> int:
+        cols = np.round(xs - shear * (bottom - ys)).astype(int)
+        return int((np.bincount(cols - cols.min()) ** 2).sum())
+
+    slant = max(np.arange(-0.2, 0.55, 0.025), key=sharpness)
+    # Diagonal letters (w, v, x...) look about as sharp leaning either way;
+    # a real italic is clearly sharper leaning one way than the other.
+    if slant > 0 and sharpness(slant) < sharpness(-slant) * 1.1:
+        slant = 0.0
+    runs = int((box[:, 1:] & ~box[:, :-1]).sum() + box[:, 0].sum())
+    return float(slant), float(box.sum()) / max(runs, 1)
+
+
+def mark_styles(words: list[Word]) -> None:
+    """Marks words that lean or are heavier than the page's normal text."""
+    sample = [w for w in words if sum(c.isalpha() for c in w.text) >= 3 and w.stroke]
+    if len(sample) < MIN_STYLED_WORDS:
+        return
+    normal_slant = float(np.median([w.slant for w in sample]))
+    normal_stroke = float(np.median([w.stroke for w in sample]))
+    for w in words:
+        if sum(c.isalpha() for c in w.text) < 2 or not w.stroke:
+            continue
+        w.italic = w.slant - normal_slant >= ITALIC_SLANT
+        w.bold = w.stroke >= normal_stroke * BOLD_STROKE
+    # A short word between two italic words ("The *of* Mice") is too small
+    # to measure; it goes with its neighbours.
+    for a, b, c in zip(words, words[1:], words[2:]):
+        if a.italic and c.italic and sum(ch.isalpha() for ch in b.text) < 3:
+            b.italic = True
 
 
 def paragraphs(lines: list[Line]) -> list[Para]:
@@ -188,7 +265,8 @@ def paragraphs(lines: list[Line]) -> list[Para]:
             prev is None
             or line.top - prev.bottom > gap + lh * 0.6
             or (indented(line) and not indented(prev))
-            or (prev.right < margin_r - lh * 3 and re.search(r"[.!?:\"”’]$", prev.words[-1][0]))
+            or (prev.right < margin_r - lh * 3
+                and re.search(r"[.!?:\"”’]$", prev.words[-1].text))
             or (indented(prev) and not indented(line) and prev.right < margin_r - lh * 3)
         )
         if new:
@@ -205,32 +283,31 @@ def paragraphs(lines: list[Line]) -> list[Para]:
 def _join_hyphens(p: Para) -> None:
     """'exam-' at the end of a line + 'ple' -> 'example'."""
     for a, b in zip(p.lines, p.lines[1:]):
-        if (a.words and b.words and re.search(r"[A-Za-z]-$", a.words[-1][0])
-                and len(a.words[-1][0]) > 2 and b.words[0][0][:1].islower()):
-            (end, u1), (start, u2) = a.words.pop(), b.words[0]
-            b.words[0] = (end[:-1] + start, u1 or u2)
+        if (a.words and b.words and re.search(r"[A-Za-z]-$", a.words[-1].text)
+                and len(a.words[-1].text) > 2 and b.words[0].text[:1].islower()):
+            end = a.words.pop()
+            b.words[0] = end.joined(b.words[0], end.text[:-1] + b.words[0].text)
     p.lines = [line for line in p.lines if line.words]
 
 
-def fix_punctuation(words: list[tuple[str, bool]]) -> list[tuple[str, bool]]:
+def fix_punctuation(words: list[Word]) -> list[Word]:
     """Fixes common OCR spacing slips: 'word ,' -> 'word,', '( word' ->
     '(word', 'end.The' -> 'end. The', doubled commas and quote marks."""
-    out: list[tuple[str, bool]] = []
+    out: list[Word] = []
     attach_next = False
-    for word, unsure in words:
-        word = word.replace("''", "\"").replace("``", "\"").replace(",,", ",")
-        word = re.sub(r"\.{4,}", "...", word)
-        word = re.sub(r"([a-z]{2}[.!?])([A-Z][a-z])", r"\1 \2", word)
-        if out and re.fullmatch(r"[,.;:!?)\]”’]+|'s|n't", word):
-            prev, prev_unsure = out.pop()
-            out.append((prev + word, prev_unsure or unsure))
-        elif attach_next and out:
-            prev, prev_unsure = out.pop()
-            out.append((prev + word, prev_unsure or unsure))
+    for word in words:
+        text = word.text.replace("''", "\"").replace("``", "\"").replace(",,", ",")
+        text = re.sub(r"\.{4,}", "...", text)
+        text = re.sub(r"([a-z]{2}[.!?])([A-Z][a-z])", r"\1 \2", text)
+        if out and (re.fullmatch(r"[,.;:!?)\]”’]+|'s|n't", text) or attach_next):
+            prev = out.pop()
+            out.append(prev.joined(word, prev.text + text))
         else:
-            out.append((word, unsure))
-        attach_next = bool(re.fullmatch(r"[(\[“‘]", word))
-    return [(" ".join(w.split()), u) for w, u in out]
+            out.append(Word(text, word.unsure, word.italic, word.bold, word.slant, word.stroke))
+        attach_next = bool(re.fullmatch(r"[(\[“‘]", text))
+    for w in out:
+        w.text = " ".join(w.text.split())
+    return out
 
 
 def page_number(text: str) -> str | None:
@@ -369,28 +446,36 @@ def build_page(paras: list[Para], known_headers: frozenset[str] = frozenset()) -
         else:
             tag = "p"
         # Headings keep their line breaks ("CHAPTER ONE" / "The Long Road").
-        runs = _runs(p.lines, keep_lines=tag != "p" or short_title(p))
+        runs = _runs(p.lines, keep_lines=tag != "p" or short_title(p), heading=tag != "p")
         prev = page.blocks[-1] if page.blocks else None
         if (tag != "h1" and short_title(p) and prev and prev["tag"] == "h1"
                 and "\n" not in "".join(r["text"] for r in prev["runs"])):
+            for r in runs:
+                r["b"] = False  # headings are bold anyway
             prev["runs"] += [run("\n")] + runs  # chapter number + its title
             continue
         page.blocks.append({"tag": tag, "runs": runs})
     return page
 
 
-def _runs(lines: list[Line], keep_lines: bool = False) -> list[dict]:
+def _runs(lines: list[Line], keep_lines: bool = False, heading: bool = False) -> list[dict]:
+    """Words -> formatted runs. Spaces between differently formatted words
+    stay outside the formatting. Headings are bold anyway, so bold isn't
+    marked inside them."""
     runs: list[dict] = []
     for n, line in enumerate(lines):
-        for k, (word, unsure) in enumerate(line.words):
+        for k, word in enumerate(line.words):
             sep = "" if n == k == 0 else ("\n" if keep_lines and k == 0 else " ")
-            if runs and runs[-1]["mark"] == unsure:
-                runs[-1]["text"] += sep + word
-            elif unsure and runs:
-                runs[-1]["text"] += sep  # keep the space outside the highlight
-                runs.append(run(word, mark=True))
+            style = {"mark": word.unsure, "i": word.italic, "b": word.bold and not heading}
+            if runs and all(runs[-1][f] == v for f, v in style.items()):
+                runs[-1]["text"] += sep + word.text
+            elif runs and any(runs[-1][f] for f in style) and not any(style.values()):
+                runs.append(run(sep + word.text, **style))  # space stays plain
+            elif runs:
+                runs[-1]["text"] += sep
+                runs.append(run(word.text, **style))
             else:
-                runs.append(run(sep + word, mark=unsure))
+                runs.append(run(sep + word.text, **style))
     return runs
 
 
@@ -405,7 +490,7 @@ def read_page(data: bytes, lang: str = "eng", timeout: int = 120,
         raise OCRError("The page took too long to read.") from e
     except pytesseract.TesseractError as e:
         raise OCRError(f"Tesseract failed: {e.message}") from e
-    lines = text_lines(layout)
+    lines = text_lines(layout, prepared)
     page = build_page(paragraphs(lines), known_headers)
     label = page.label
     if not label and lines:

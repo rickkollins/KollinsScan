@@ -164,6 +164,7 @@ async function openBook(id) {
   $("#book-author").value = book.author;
   $("#export-rtf").href = `/api/books/${id}/export?format=rtf`;
   $("#export-txt").href = `/api/books/${id}/export?format=txt`;
+  $("#export-docx").href = `/api/books/${id}/export?format=docx`;
   $("#grammar-off").hidden = me.grammar;
   $("#grammar-on").hidden = !me.grammar;
   $("#auto-check").parentElement.hidden = !me.grammar;
@@ -194,8 +195,8 @@ $("#book-title").addEventListener("change", (e) => {
 });
 $("#book-author").addEventListener("change", (e) => saveBook({ author: e.target.value }));
 
-for (const id of ["#export-rtf", "#export-txt"]) {
-  $(id).addEventListener("click", async (e) => {
+for (const link of $$(".export")) {
+  link.addEventListener("click", async (e) => {
     if (!dirty.size) return;
     e.preventDefault();
     if (await saveAll()) location.href = e.currentTarget.href;
@@ -264,10 +265,26 @@ function pageElement(page) {
     updateContents();
     suggestNextLabel();
   });
-  if (page.words !== undefined) {
-    $(".page-info", el).textContent = `${page.words} words · read in ${page.seconds}s`;
-  }
+  const claudeBtn = $(".claude", el);
+  claudeBtn.hidden = !me.claude;
+  claudeBtn.addEventListener("click", () => askClaude(el));
+  $(".review-discard", el).addEventListener("click", () => { $(".claude-review", el).hidden = true; });
+  showPageInfo(el, page);
   return el;
+}
+
+/** "312 words · 9 unsure · read in 2.1s", and nudges toward Claude when
+ * the scanner was unsure about a lot of words. */
+function showPageInfo(el, page = {}) {
+  const unsure = $$("mark", el).length;
+  const parts = [];
+  if (page.words !== undefined) parts.push(`${page.words} words`);
+  if (unsure) parts.push(`${unsure} unsure`);
+  if (page.seconds !== undefined) parts.push(`read in ${page.seconds}s`);
+  if (page.blurry) parts.push("the photo may be blurry: Re-scan?");
+  $(".page-info", el).textContent = parts.join(" · ");
+  el.classList.toggle("blurry", Boolean(page.blurry));
+  $(".claude", el).classList.toggle("suggest", me.claude && unsure >= 8);
 }
 
 async function movePage(el, direction) {
@@ -380,6 +397,14 @@ async function listCameras() {
   if (current) select.value = current;
 }
 
+// Camera settings are remembered per camera: {resolution, constraints}.
+function cameraPrefs(deviceId) {
+  try { return JSON.parse(store(`camera.prefs.${deviceId}`) || "{}"); } catch { return {}; }
+}
+function saveCameraPrefs(deviceId, prefs) {
+  store(`camera.prefs.${deviceId}`, JSON.stringify(prefs));
+}
+
 async function startCamera(deviceId = store("camera.device")) {
   const err = $("#camera-error");
   err.hidden = true;
@@ -389,8 +414,11 @@ async function startCamera(deviceId = store("camera.device")) {
     return;
   }
   stopCamera();
-  // Ask for the camera's best resolution: more pixels per letter = better OCR.
-  const video_ = { width: { ideal: 4096 }, height: { ideal: 2160 } };
+  // Ask for the camera's best resolution (more pixels per letter = better
+  // OCR) unless a resolution was picked in Camera settings.
+  const prefs = deviceId ? cameraPrefs(deviceId) : {};
+  const [w, h] = (prefs.resolution || "4096x2160").split("x").map(Number);
+  const video_ = { width: { ideal: w }, height: { ideal: h } };
   if (deviceId) video_.deviceId = { exact: deviceId };
   try {
     stream = await navigator.mediaDevices.getUserMedia({ video: video_, audio: false });
@@ -407,18 +435,202 @@ async function startCamera(deviceId = store("camera.device")) {
   $("#camera-off").hidden = true;
   $("#capture").disabled = false;
   store("camera.on", "1");
-  const settings = stream.getVideoTracks()[0].getSettings();
-  store("camera.device", settings.deviceId || "");
+  const track = stream.getVideoTracks()[0];
+  const id = track.getSettings().deviceId || "";
+  store("camera.device", id);
+  if (id && cameraPrefs(id).constraints) {
+    await track.applyConstraints({ advanced: [cameraPrefs(id).constraints] }).catch(() => {});
+  }
   await listCameras();
+  buildCameraControls(track, id);
+  startMeter();
+  const settings = track.getSettings();
   status(`Camera ready (${settings.width}×${settings.height}).`);
 }
 
 function stopCamera() {
   if (stream) stream.getTracks().forEach((t) => t.stop());
   stream = null;
+  stopMeter();
   video.hidden = true;
   $("#camera-off").hidden = false;
   $("#capture").disabled = true;
+  $("#camera-settings").hidden = true;
+}
+
+// ---- camera settings ------------------------------------------------------
+
+// Settings a USB (UVC) camera may offer through the browser. "mode" is the
+// matching auto/manual switch, if the setting has one.
+const CAMERA_CONTROLS = [
+  { key: "focusDistance", label: "Focus", mode: "focusMode" },
+  { key: "exposureTime", label: "Exposure", mode: "exposureMode" },
+  { key: "exposureCompensation", label: "Exposure ±" },
+  { key: "brightness", label: "Brightness" },
+  { key: "contrast", label: "Contrast" },
+  { key: "sharpness", label: "Sharpening" },
+  { key: "zoom", label: "Zoom" },
+];
+const RESOLUTIONS = [[3840, 2160], [2560, 1440], [1920, 1080], [1280, 720]];
+
+function buildCameraControls(track, deviceId) {
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  const settings = track.getSettings();
+  const box = $("#camera-controls");
+  box.replaceChildren();
+  const remember = (changes) => {
+    const prefs = cameraPrefs(deviceId);
+    prefs.constraints = { ...(prefs.constraints || {}), ...changes };
+    saveCameraPrefs(deviceId, prefs);
+  };
+  const apply = async (changes) => {
+    try {
+      await track.applyConstraints({ advanced: [changes] });
+      remember(changes);
+    } catch (ex) {
+      status(`The camera didn't accept that setting: ${ex.message || ex.name}`);
+    }
+  };
+  const row = (label, ...controls) => {
+    const l = document.createElement("label");
+    l.append(label, ...controls);
+    box.append(l);
+  };
+
+  // Resolution (restarts the camera).
+  if (caps.width?.max) {
+    const select = document.createElement("select");
+    select.append(new Option("Best available", ""));
+    for (const [w, h] of RESOLUTIONS) {
+      if (w <= caps.width.max && h <= (caps.height?.max || h)) select.append(new Option(`${w} × ${h}`, `${w}x${h}`));
+    }
+    select.value = cameraPrefs(deviceId).resolution || "";
+    select.addEventListener("change", () => {
+      const prefs = cameraPrefs(deviceId);
+      prefs.resolution = select.value;
+      saveCameraPrefs(deviceId, prefs);
+      startCamera(deviceId);
+    });
+    row("Resolution", select, Object.assign(document.createElement("output"), { textContent: `${settings.width}×${settings.height}` }));
+  }
+
+  let offered = 0;
+  for (const c of CAMERA_CONTROLS) {
+    const range = caps[c.key];
+    if (!range || typeof range.max !== "number" || range.max <= range.min) continue;
+    offered += 1;
+    const slider = Object.assign(document.createElement("input"), {
+      type: "range", min: range.min, max: range.max, step: range.step || (range.max - range.min) / 100,
+      value: settings[c.key] ?? (range.min + range.max) / 2,
+    });
+    const out = Object.assign(document.createElement("output"), { textContent: Number(slider.value).toFixed(range.step >= 1 ? 0 : 2) });
+    const modes = c.mode ? caps[c.mode] || [] : [];
+    const auto = modes.find((m) => m !== "manual");
+    let modeSelect = null;
+    if (auto && modes.includes("manual")) {
+      modeSelect = document.createElement("select");
+      modeSelect.append(new Option("Auto", auto), new Option("Manual", "manual"));
+      modeSelect.value = settings[c.mode] === "manual" ? "manual" : auto;
+      slider.disabled = modeSelect.value !== "manual";
+      modeSelect.addEventListener("change", () => {
+        slider.disabled = modeSelect.value !== "manual";
+        const changes = { [c.mode]: modeSelect.value };
+        if (modeSelect.value === "manual") changes[c.key] = Number(slider.value);
+        apply(changes);
+      });
+    }
+    slider.addEventListener("input", () => { out.textContent = Number(slider.value).toFixed(range.step >= 1 ? 0 : 2); });
+    slider.addEventListener("change", () => {
+      const changes = { [c.key]: Number(slider.value) };
+      if (modeSelect) changes[c.mode] = "manual";
+      apply(changes);
+    });
+    if (modeSelect) {
+      const wrap = document.createElement("span");
+      wrap.className = "row";
+      wrap.append(modeSelect, slider);
+      row(c.label, wrap, out);
+    } else {
+      row(c.label, slider, out);
+    }
+  }
+  $("#camera-controls-none").hidden = offered > 0;
+  $("#camera-settings").hidden = false;
+  $("#camera-reset").onclick = () => {
+    const prefs = cameraPrefs(deviceId);
+    delete prefs.constraints;
+    delete prefs.resolution;
+    saveCameraPrefs(deviceId, prefs);
+    const autos = {};
+    for (const c of CAMERA_CONTROLS) {
+      const m = c.mode && (caps[c.mode] || []).find((x) => x !== "manual");
+      if (m) autos[c.mode] = m;
+    }
+    track.applyConstraints({ advanced: [autos] }).catch(() => {}).finally(() => startCamera(deviceId));
+  };
+}
+
+// ---- sharpness meter --------------------------------------------------------
+
+// Sharpness = how much fine detail the middle of the picture has (the
+// variance of a Laplacian filter). It depends on the page as well as on
+// focus, so it's shown relative to the best value seen recently.
+const meterCanvas = document.createElement("canvas");
+let meterTimer = null;
+let sharpPeak = 0;
+let lastSmall = null;
+
+function measure() {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!vw) return null;
+  const w = 320;
+  const h = Math.round((w * vh * 0.6) / (vw * 0.6));
+  meterCanvas.width = w;
+  meterCanvas.height = h;
+  const ctx = meterCanvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(video, vw * 0.2, vh * 0.2, vw * 0.6, vh * 0.6, 0, 0, w, h);
+  const px = ctx.getImageData(0, 0, w, h).data;
+  const g = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) g[i] = 0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2];
+  let sum = 0, sum2 = 0, n = 0, motion = 0;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const lap = 4 * g[i] - g[i - 1] - g[i + 1] - g[i - w] - g[i + w];
+      sum += lap; sum2 += lap * lap; n++;
+    }
+  }
+  if (lastSmall && lastSmall.length === g.length) {
+    for (let i = 0; i < g.length; i += 7) motion += Math.abs(g[i] - lastSmall[i]);
+    motion /= g.length / 7;
+  }
+  lastSmall = g;
+  return { sharp: sum2 / n - (sum / n) ** 2, motion };
+}
+
+function startMeter() {
+  stopMeter();
+  sharpPeak = 0;
+  $("#sharpness").hidden = false;
+  meterTimer = setInterval(() => {
+    const m = measure();
+    if (!m) return;
+    sharpPeak = Math.max(m.sharp, sharpPeak * 0.995);  // slowly forgets
+    const ratio = sharpPeak ? m.sharp / sharpPeak : 0;
+    const bar = $("#sharp-bar");
+    bar.style.width = `${Math.round(Math.min(1, ratio) * 100)}%`;
+    const level = m.motion > 6 ? "poor" : ratio >= 0.7 ? "good" : ratio >= 0.4 ? "fair" : "poor";
+    bar.className = level;
+    $("#sharp-label").textContent = m.motion > 6 ? "Moving…" : { good: "Sharp", fair: "Soft", poor: "Blurry" }[level];
+  }, 250);
+}
+
+function stopMeter() {
+  clearInterval(meterTimer);
+  meterTimer = null;
+  lastSmall = null;
+  $("#sharpness").hidden = true;
 }
 
 $("#start-camera").addEventListener("click", () => startCamera());
@@ -443,15 +655,37 @@ function grabFrame() {
   ctx.translate(canvas.width / 2, canvas.height / 2);
   ctx.rotate((rotation * Math.PI) / 180);
   ctx.drawImage(video, -w / 2, -h / 2);
-  return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
+  return canvas;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Watches the camera for about half a second and keeps the sharpest frame,
+ * so a slight wobble after turning the page doesn't spoil the shot. */
+async function sharpestFrame() {
+  let best = null;
+  let bestScore = -1;
+  for (let i = 0; i < 5; i++) {
+    const m = measure();
+    const score = m ? m.sharp : 0;
+    if (score > bestScore || !best) {
+      bestScore = score;
+      best = grabFrame();
+    }
+    if (i < 4) await sleep(100);
+  }
+  sharpPeak = Math.max(sharpPeak, bestScore);
+  return { canvas: best, blurry: sharpPeak > 0 && bestScore < sharpPeak * 0.4 };
 }
 
 $("#capture").addEventListener("click", capture);
 document.addEventListener("keydown", (e) => {
   if (e.code !== "Space" || $("#book-view").hidden || e.repeat) return;
   const t = e.target;
-  // Space always captures, even with a button focused, unless you're typing.
-  if (t.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(t.tagName)) return;
+  // Space always captures (even with a button or slider focused) unless
+  // you're typing or choosing from a list.
+  const typing = t.tagName === "INPUT" && !["range", "checkbox", "radio", "button"].includes(t.type);
+  if (t.isContentEditable || typing || ["SELECT", "TEXTAREA"].includes(t.tagName)) return;
   e.preventDefault();
   capture();
 });
@@ -464,7 +698,10 @@ async function capture() {
   void flash.offsetWidth;  // restart the animation
   flash.style.animation = "";
   setTimeout(() => (flash.hidden = true), 400);
-  enqueue(await grabFrame(), "camera.jpg");
+  const { canvas, blurry } = await sharpestFrame();
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
+  enqueue(blob, "camera.jpg", { blurry });
+  if (blurry) status("That photo looks blurry. Check the focus; you can Re-scan the page.");
 }
 
 $("#upload").addEventListener("change", (e) => {
@@ -502,7 +739,7 @@ function suggestNextLabel() {
 const scanQueue = [];
 let scanning = false;
 
-function enqueue(blob, name) {
+function enqueue(blob, name, { blurry = false } = {}) {
   const target = mode;
   setMode("append");
   const typed = $("#next-label").value.trim();
@@ -520,7 +757,7 @@ function enqueue(blob, name) {
   el.classList.add("busy");
   $(".page-text", el).contentEditable = "false";
   $(".page-info", el).textContent = "Waiting…";
-  scanQueue.push({ blob, name, target, el, label: typed });
+  scanQueue.push({ blob, name, target, el, label: typed, blurry });
   // Guess the number of the page after this one.
   $("#next-label").value = "";
   if (target.kind === "append" && /^\d+$/.test(guess)) {
@@ -545,7 +782,7 @@ async function runQueue() {
     try {
       if (job.target.page && dirty.has(job.target.page)) await saveAll();
       const page = await api(`/api/books/${book.id}/pages`, { method: "POST", body: form });
-      const fresh = pageElement(page);
+      const fresh = pageElement({ ...page, blurry: job.blurry });
       job.el.replaceWith(fresh);
       const recheck = [];
       for (const c of page.cleaned) {  // running header removed from earlier pages
@@ -854,6 +1091,139 @@ $("#pages").addEventListener("input", () => {
   clearTimeout(issuesTimer);
   issuesTimer = setTimeout(renderIssues, 400);
 });
+
+// ==========================================================================
+// Ask Claude (re-reads a page from its photo)
+// ==========================================================================
+
+async function askClaude(el) {
+  if (!el.dataset.id || !(await saveAll())) return;
+  const btn = $(".claude", el);
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Claude is reading…";
+  try {
+    const result = await api(`/api/pages/${el.dataset.id}/claude`, {
+      method: "POST", json: { html: $(".page-text", el).innerHTML },
+    });
+    showReview(el, result);
+  } catch (ex) {
+    alert(ex.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+/** Words of some page HTML, with paragraph starts and formatting, for
+ * comparing two versions. Highlights for unsure words are ignored. */
+function wordTokens(html) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;  // cleaned by the server; template content is inert
+  const tokens = [];
+  for (const block of tpl.content.children) {
+    const tag = block.tagName.toLowerCase();
+    tokens.push({ key: `¶${tag}`, block: tag });
+    const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        if (node.tagName === "BR") tokens.push({ key: "↵", br: true });
+        continue;
+      }
+      const within = (names) => names.some((n) => node.parentElement.closest(n) && block.contains(node.parentElement.closest(n)));
+      const style = { i: within(["i", "em"]), b: within(["b", "strong"]), u: within(["u"]) };
+      for (const word of node.data.split(/\s+/).filter(Boolean)) {
+        tokens.push({ key: `${word}|${+style.i}${+style.b}${+style.u}`, word, style });
+      }
+    }
+  }
+  return tokens;
+}
+
+/** Longest-common-subsequence diff: [["=", token] | ["-", token] | ["+", token]]. */
+function diffTokens(a, b) {
+  const n = a.length;
+  const m = b.length;
+  const table = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      table[i][j] = a[i].key === b[j].key ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
+    }
+  }
+  const ops = [];
+  let i = 0;
+  let j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i].key === b[j].key) { ops.push(["=", b[j]]); i++; j++; }
+    else if (j < m && (i === n || table[i][j + 1] > table[i + 1][j])) ops.push(["+", b[j++]]);
+    else ops.push(["-", a[i++]]);
+  }
+  return ops;
+}
+
+function showReview(el, result) {
+  const review = $(".claude-review", el);
+  const ops = diffTokens(wordTokens($(".page-text", el).innerHTML), wordTokens(result.html));
+  const out = $(".review-diff", review);
+  out.replaceChildren();
+  let para = null;
+  let changes = 0;
+  for (const [op, token] of ops) {
+    if (token.block) {
+      if (op === "-") continue;  // two paragraphs joined: shown by the words
+      para = document.createElement(token.block === "p" ? "p" : "div");
+      if (token.block !== "p") para.className = "h";
+      out.append(para);
+      continue;
+    }
+    if (!para) {
+      para = document.createElement("p");
+      out.append(para);
+    }
+    if (token.br) {
+      if (op !== "-") para.append(document.createElement("br"));
+      continue;
+    }
+    let node = document.createTextNode(token.word);
+    for (const [flag, tag] of [["u", "u"], ["b", "b"], ["i", "i"]]) {
+      if (token.style[flag]) {
+        const wrap = document.createElement(tag);
+        wrap.append(node);
+        node = wrap;
+      }
+    }
+    if (op !== "=") {
+      changes += 1;
+      const mark = document.createElement(op === "+" ? "ins" : "del");
+      mark.append(node);
+      node = mark;
+    }
+    if (para.lastChild && para.lastChild.nodeName !== "BR") para.append(" ");
+    para.append(node);
+  }
+  const current = $(".label", el).value;
+  const number = result.page_number && result.page_number !== current
+    ? ` Page number: ${result.page_number}.` : "";
+  $(".review-summary", review).textContent = changes
+    ? `${changes} word${changes === 1 ? "" : "s"} differ (green: Claude's, red: yours).${number}`
+    : `Claude agrees with the current text.${number}`;
+  const notes = $(".review-notes", review);
+  notes.textContent = result.notes || "";
+  notes.hidden = !result.notes;
+  $(".review-accept", review).onclick = () => {
+    $(".page-text", el).innerHTML = result.html;  // cleaned by the server
+    if (number) $(".label", el).value = result.page_number;
+    review.hidden = true;
+    dropIssues(el);
+    markDirty(el);
+    showPageInfo(el);
+    $(".page-info", el).textContent = "Corrected by Claude";
+    updateContents();
+    if (me.grammar && $("#auto-check").checked) checkPages([el], false);
+  };
+  review.hidden = false;
+  review.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
 
 function renderBookLists() {
   if (!book) return;
