@@ -121,9 +121,17 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_env_values_with_separator_are_refused(self):
         self.run_script("install", "--domain", "kollins-scan.tech", "--yes", "--no-wait")
-        r = self.run_script("password", "pass|word")
-        self.assertNotEqual(r.returncode, 0)
-        self.assertTrue(re.search("isn't allowed", r.stderr))
+        for bad in ("pass|word", "pa$$word"):
+            r = self.run_script("password", bad)
+            self.assertNotEqual(r.returncode, 0, bad)
+            self.assertTrue(re.search("can't contain", r.stderr))
+
+    def test_passwords_with_special_characters(self):
+        self.run_script("install", "--domain", "kollins-scan.tech", "--yes", "--no-wait")
+        for password in ("!Xy12zz9", "a&b\\c/d#e", "with space"):
+            r = self.run_script("password", password)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(self.env()["KOLLINSSCAN_ADMIN_PASSWORD"], password)
 
 
 if __name__ == "__main__":

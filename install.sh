@@ -60,13 +60,17 @@ env_get() {  # env_get KEY -> value from .env (empty if missing)
 
 env_set() {  # env_set KEY VALUE
     local key=$1 value=$2
-    [[ "$value" != *$'\n'* && "$value" != *"|"* ]] || die "$key contains a character that isn't allowed."
+    # | is sed's separator here, and Docker Compose would read $ as a variable.
+    [[ "$value" != *$'\n'* && "$value" != *"|"* && "$value" != *'$'* ]] \
+        || die "$key can't contain |, \$ or a line break."
     touch "$ENV_FILE"
     chmod 600 "$ENV_FILE"
+    local escaped=${value//\\/\\\\}  # \ and & are special in a sed replacement
+    escaped=${escaped//&/\\&}
     if grep -q "^$key=" "$ENV_FILE"; then
-        sed -i "s|^$key=.*|$key=$value|" "$ENV_FILE"
+        sed -i "s|^$key=.*|$key=$escaped|" "$ENV_FILE"
     elif grep -q "^# *$key=" "$ENV_FILE"; then
-        sed -i "0,/^# *$key=.*/s||$key=$value|" "$ENV_FILE"
+        sed -i "0,/^# *$key=.*/s||$key=$escaped|" "$ENV_FILE"
     else
         printf '%s=%s\n' "$key" "$value" >>"$ENV_FILE"
     fi
